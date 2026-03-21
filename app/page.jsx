@@ -410,6 +410,10 @@ export default function ForgeAgent() {
   const [searching, setSearching] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const [generatedFiles, setGeneratedFiles] = useState([]);
+  const [agentMode, setAgentMode] = useState(false);
+  const [agentRunning, setAgentRunning] = useState(false);
+  const [agentSteps, setAgentSteps] = useState([]);
+  const [agentFiles, setAgentFiles] = useState([]);
   const [showKnowledge, setShowKnowledge] = useState(false);
   const [knowledgeDraft, setKnowledgeDraft] = useState("");
   const [copiedId, setCopiedId] = useState(null);
@@ -535,6 +539,96 @@ export default function ForgeAgent() {
     ta.style.height = Math.min(ta.scrollHeight, 160) + "px";
   };
 
+  // ── AGENT MODE: autonomous multi-step execution ──
+  const runAgent = async (goal) => {
+    if (!goal.trim() || agentRunning) return;
+    setAgentRunning(true);
+    setAgentSteps([]);
+    setAgentFiles([]);
+    setInput("");
+
+    // Add user message to chat
+    const userMsg = { role: "user", content: `🤖 Agent Goal: ${goal}`, id: Date.now() };
+    setMessages(prev => [...prev, userMsg]);
+
+    const systemContext = buildSystemPrompt(userCtx, memory);
+
+    try {
+      const res = await fetch("/api/agent", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ goal, systemContext }),
+      });
+
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n");
+        buffer = lines.pop() || "";
+
+        for (const line of lines) {
+          if (!line.startsWith("data: ")) continue;
+          try {
+            const event = JSON.parse(line.slice(6));
+            handleAgentEvent(event);
+          } catch {}
+        }
+      }
+    } catch (err) {
+      setAgentSteps(prev => [...prev, { type: "error", message: err.message }]);
+    } finally {
+      setAgentRunning(false);
+    }
+  };
+
+  const handleAgentEvent = (event) => {
+    if (event.type === "start") {
+      setAgentSteps([{ type: "start", goal: event.goal }]);
+    } else if (event.type === "thinking") {
+      setAgentSteps(prev => [...prev, { type: "thinking", step: event.step }]);
+    } else if (event.type === "step") {
+      setAgentSteps(prev => {
+        const filtered = prev.filter(s => s.type !== "thinking");
+        return [...filtered, event];
+      });
+    } else if (event.type === "file_created") {
+      setAgentFiles(prev => [...prev, event]);
+      setAgentSteps(prev => [...prev, { type: "file_created", filename: event.filename }]);
+    } else if (event.type === "search_result") {
+      setAgentSteps(prev => [...prev, { type: "search_result", query: event.query }]);
+    } else if (event.type === "code_result") {
+      setAgentSteps(prev => [...prev, { type: "code_result", success: event.success, output: event.output, error: event.error }]);
+    } else if (event.type === "done") {
+      setAgentSteps(prev => {
+        const filtered = prev.filter(s => s.type !== "thinking");
+        return [...filtered, { type: "done", summary: event.summary }];
+      });
+      setAgentFiles(event.files || []);
+      // Add completion message to chat
+      const doneMsg = {
+        role: "assistant",
+        content: `✅ **Task Complete**\n\n${event.summary}${event.files?.length ? `\n\n**Files created:** ${event.files.map(f => f.filename).join(", ")}` : ""}`,
+        id: Date.now(),
+      };
+      setMessages(prev => [...prev, doneMsg]);
+    } else if (event.type === "error") {
+      setAgentSteps(prev => [...prev, { type: "error", message: event.message }]);
+    }
+  };
+
+  const downloadAgentFile = (file) => {
+    const blob = new Blob([file.code], { type: "text/plain" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = file.filename; a.click();
+    URL.revokeObjectURL(url);
+  };
+
   const sendMessage = async (overrideContent) => {
     const trimmed = (overrideContent || input).trim();
     if (!trimmed || loading) return;
@@ -601,8 +695,14 @@ export default function ForgeAgent() {
     sendMessage(activeQuestions.map((q, i) => `${i + 1}. ${q.q}\n→ ${(answers[i] || "").trim() || "(skipped)"}`).join("\n\n"));
   };
   const allAnswered = activeQuestions ? activeQuestions.every((_, i) => (answers[i] || "").trim().length > 0) : false;
-  const handleKey = (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendMessage(); } };
-  const clearAll = () => { clearStorage(); setMessages(null); setUserCtx(null); setMemory(null); setMsgCount(0); setAnswers({}); setFeedback({}); };
+  const handleKey = (e) => {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      if (agentMode) runAgent(input);
+      else sendMessage();
+    }
+  };
+  const clearAll = () => { clearStorage(); setMessages(null); setUserCtx(null); setMemory(null); setMsgCount(0); setAnswers({}); setFeedback({}); setAgentSteps([]); setAgentFiles([]); };
 
   if (!ready) return null;
   if (!userCtx || !messages) return <Onboarding onComplete={onboardComplete} />;
@@ -741,15 +841,67 @@ export default function ForgeAgent() {
         </div>
       )}
 
+      {/* Agent Feed */}
+      {(agentSteps.length > 0 || agentRunning) && (
+        <div className="agent-feed">
+          <div className="agent-feed-header">
+            <span className="agent-feed-title">⚡ FORGE AGENT</span>
+            {agentRunning && <span className="agent-pulse">running...</span>}
+            {!agentRunning && <button className="agent-close" onClick={() => { setAgentSteps([]); setAgentFiles([]); }}>✕</button>}
+          </div>
+          <div className="agent-steps">
+            {agentSteps.map((step, i) => (
+              <div key={i} className={`agent-step agent-step-${step.type}`}>
+                {step.type === "start" && <span>🎯 Goal: {step.goal}</span>}
+                {step.type === "thinking" && <span className="agent-thinking">⟳ Thinking...</span>}
+                {step.type === "step" && step.action === "THINK" && <span>💭 {step.content?.substring(0, 120)}{step.content?.length > 120 ? "..." : ""}</span>}
+                {step.type === "step" && step.action === "SEARCH" && <span>🔍 Searching: "{step.query}"</span>}
+                {step.type === "step" && step.action === "CREATE_FILE" && <span>📝 Creating: {step.filename}</span>}
+                {step.type === "step" && step.action === "RUN_CODE" && <span>▶ Running {step.language} code...</span>}
+                {step.type === "search_result" && <span className="agent-success">✓ Search complete</span>}
+                {step.type === "file_created" && <span className="agent-success">✓ Created {step.filename}</span>}
+                {step.type === "code_result" && (
+                  <span className={step.success ? "agent-success" : "agent-error"}>
+                    {step.success ? `✓ Code ran successfully: ${step.output?.substring(0, 60)}` : `✗ Error: ${step.error?.substring(0, 80)}`}
+                  </span>
+                )}
+                {step.type === "done" && <span className="agent-done">✅ {step.summary?.substring(0, 150)}</span>}
+                {step.type === "error" && <span className="agent-error">✗ {step.message}</span>}
+              </div>
+            ))}
+          </div>
+          {agentFiles.length > 0 && !agentRunning && (
+            <div className="agent-files">
+              <div className="agent-files-label">FILES READY TO DOWNLOAD</div>
+              <div className="agent-files-list">
+                {agentFiles.map((f, i) => (
+                  <button key={i} className="agent-file-btn" onClick={() => downloadAgentFile(f)}>
+                    ⬇ {f.filename}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
       {/* Input */}
       <div className="input-area">
         <div className="input-wrap">
+          {agentMode && (
+            <span className="agent-mode-badge">⚡ AGENT</span>
+          )}
           <textarea ref={textareaRef} value={input}
             onChange={e => { setInput(e.target.value); autoResize(); }}
             onKeyDown={handleKey}
-            placeholder={activeQuestions ? "Or type a free-form reply..." : "Tell FORGE what you need..."}
-            rows={1} disabled={loading} />
-          <button className="send-btn" onClick={() => sendMessage()} disabled={loading || !input.trim()}>
+            placeholder={agentMode ? "Give FORGE a goal to complete autonomously..." : activeQuestions ? "Or type a free-form reply..." : "Tell FORGE what you need..."}
+            rows={1} disabled={loading || agentRunning} />
+          <button
+            className={`agent-toggle ${agentMode ? "active" : ""}`}
+            onClick={() => setAgentMode(m => !m)}
+            title={agentMode ? "Switch to chat mode" : "Switch to agent mode"}
+          >⚡</button>
+          <button className="send-btn" onClick={() => agentMode ? runAgent(input) : sendMessage()} disabled={loading || agentRunning || !input.trim()}>
             <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
               <line x1="22" y1="2" x2="11" y2="13" /><polygon points="22 2 15 22 11 13 2 9 22 2" />
             </svg>

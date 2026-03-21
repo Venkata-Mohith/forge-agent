@@ -169,6 +169,34 @@ body {
 .send-btn:disabled { opacity: .2; cursor: not-allowed; }
 .input-hint { font-size: 10px; color: #181818; text-align: center; margin-top: 6px; letter-spacing: 1px; }
 
+/* ── AGENT MODE ── */
+.agent-mode-badge { font-size: 10px; font-weight: 700; color: var(--orange); letter-spacing: 2px; flex-shrink: 0; padding: 2px 0; animation: pulse 2s infinite; }
+
+.agent-toggle { width: 28px; height: 28px; background: transparent; border: 1px solid #1e1e1e; border-radius: 7px; cursor: pointer; font-size: 14px; display: flex; align-items: center; justify-content: center; flex-shrink: 0; transition: all .2s; line-height: 1; }
+.agent-toggle:hover { border-color: var(--orange); }
+.agent-toggle.active { background: rgba(255,77,0,.15); border-color: var(--orange); box-shadow: 0 0 8px rgba(255,77,0,.3); }
+
+.agent-feed { max-width: 800px; width: 100%; margin: 0 auto; padding: 0 18px 10px; animation: fadeUp .3s ease; }
+.agent-feed-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
+.agent-feed-title { font-size: 10px; font-weight: 700; color: var(--orange); letter-spacing: 2px; }
+.agent-pulse { font-size: 10px; color: #444; letter-spacing: 1px; animation: pulse 1.5s infinite; }
+.agent-close { background: transparent; border: none; color: #2a2a2a; cursor: pointer; font-size: 16px; transition: color .15s; }
+.agent-close:hover { color: #fff; }
+
+.agent-steps { display: flex; flex-direction: column; gap: 4px; max-height: 240px; overflow-y: auto; background: #0d0d0d; border: 1px solid #1a1a1a; border-radius: 10px; padding: 12px 14px; }
+.agent-step { font-size: 11px; color: #555; line-height: 1.5; padding: 2px 0; border-bottom: 1px solid #111; }
+.agent-step:last-child { border-bottom: none; }
+.agent-thinking { color: #333; animation: pulse 1s infinite; }
+.agent-success { color: #00ff88; }
+.agent-error { color: #ff4d4d; }
+.agent-done { color: var(--orange-light); font-weight: 600; }
+
+.agent-files { margin-top: 8px; padding: 10px 14px; background: rgba(0,255,136,.04); border: 1px solid rgba(0,255,136,.15); border-radius: 10px; }
+.agent-files-label { font-size: 9px; color: #2a2a2a; letter-spacing: 2px; text-transform: uppercase; margin-bottom: 8px; }
+.agent-files-list { display: flex; flex-wrap: wrap; gap: 6px; }
+.agent-file-btn { padding: 5px 12px; background: #141414; border: 1px solid rgba(0,255,136,.2); border-radius: 20px; font-size: 11px; color: #00ff88; cursor: pointer; font-family: var(--font); transition: all .15s; }
+.agent-file-btn:hover { background: rgba(0,255,136,.08); border-color: #00ff88; }
+
 /* ── MEMORY PANEL ── */
 .overlay { position: fixed; inset: 0; background: rgba(0,0,0,.75); z-index: 100; display: flex; align-items: center; justify-content: center; padding: 20px; animation: fadeIn .2s ease; }
 .mem-panel { background: var(--surface); border: 1px solid var(--border); border-radius: 16px; width: 100%; max-width: 440px; overflow: hidden; animation: fadeUp .25s ease; }
