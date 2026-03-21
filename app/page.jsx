@@ -28,6 +28,17 @@ Beginner→plain English | Intermediate→balanced | Advanced→technical | Expe
 ${ctx.name ? "Use their name occasionally." : ""}
 ` : "";
 
+  const knowledgeBlock = ctx?.knowledge ? `
+═══════════════════════════════════
+PRE-LOADED PROJECT KNOWLEDGE
+═══════════════════════════════════
+The user has given you this context about their project. Treat it as ground truth.
+Reference it naturally — don't repeat it back robotically, but use it to give
+sharper, more relevant answers from the very first message.
+
+${ctx.knowledge}
+` : "";
+
   const fbBlock = memory?.feedbackPatterns?.length ? `
 ═══════════════════════════════════
 FEEDBACK FROM THIS USER — CRITICAL
@@ -37,7 +48,7 @@ ${memory.feedbackPatterns.map((f, i) => `${i + 1}. "${f.issue}" (about: ${f.cont
 ` : "";
 
   return `You are FORGE — a witty, slightly sarcastic genius who builds things that actually work. Not a chatbot. The smartest developer friend anyone has ever had.
-${ctxBlock}${memBlock}${fbBlock}
+${ctxBlock}${knowledgeBlock}${memBlock}${fbBlock}
 ═══════════════════════════════════
 WHO YOU ARE
 ═══════════════════════════════════
@@ -399,6 +410,8 @@ export default function ForgeAgent() {
   const [searching, setSearching] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const [generatedFiles, setGeneratedFiles] = useState([]);
+  const [showKnowledge, setShowKnowledge] = useState(false);
+  const [knowledgeDraft, setKnowledgeDraft] = useState("");
   const [copiedId, setCopiedId] = useState(null);
   const [previewCode, setPreviewCode] = useState(null);
   const bottomRef = useRef(null);
@@ -413,6 +426,7 @@ export default function ForgeAgent() {
       setMessages(stored.messages || null);
       setMemory(stored.memory || null);
       setMsgCount(stored.messages?.filter(m => m.role === "user").length || 0);
+      setKnowledgeDraft(stored.ctx?.knowledge || "");
     }
     setReady(true);
   }, []);
@@ -603,7 +617,12 @@ export default function ForgeAgent() {
           <div className="forge-subtitle">{userCtx.name ? `${userCtx.name} · ` : ""}{userCtx.level} · {userCtx.goal}</div>
         </div>
         <div className="header-right">
-          <button className={`mem-btn ${memory?.summary ? "has-memory" : ""}`} onClick={() => setShowMemory(true)}>
+          <button className={`mem-btn ${userCtx?.knowledge ? "has-memory" : ""}`}
+            onClick={() => { setKnowledgeDraft(userCtx?.knowledge || ""); setShowKnowledge(true); }}
+            title="Project knowledge">
+            📚{userCtx?.knowledge && <span className="mem-dot" />}
+          </button>
+          <button className={`mem-btn ${memory?.summary ? "has-memory" : ""}`} onClick={() => setShowMemory(true)} title="Memory">
             🧠{memory?.summary && <span className="mem-dot" />}
           </button>
           {msgCount > 0 && <span className="msg-counter">{msgCount} msg{msgCount !== 1 ? "s" : ""}</span>}
@@ -753,6 +772,54 @@ export default function ForgeAgent() {
       )}
 
       {showMemory && <MemoryPanel memory={memory} onClose={() => setShowMemory(false)} />}
+
+      {showKnowledge && (
+        <div className="overlay" onClick={() => setShowKnowledge(false)}>
+          <div className="mem-panel" onClick={e => e.stopPropagation()}>
+            <div className="mem-header">
+              <span>📚 PROJECT KNOWLEDGE</span>
+              <button className="mem-close" onClick={() => setShowKnowledge(false)}>×</button>
+            </div>
+            <div className="mem-body">
+              <div className="mem-section">
+                <div className="mem-label">WHAT IS THIS?</div>
+                <div className="mem-text">Paste anything about your project — stack, goals, existing code, constraints. FORGE will know it from the very first message.</div>
+              </div>
+              <div className="mem-section">
+                <div className="mem-label">YOUR PROJECT CONTEXT</div>
+                <textarea
+                  className="knowledge-input"
+                  placeholder={"Example:\nI'm building a job board with Next.js 14, Supabase, and Tailwind.\nThe backend uses Supabase auth + postgres.\nI prefer TypeScript and functional components.\nMain goal: let employers post jobs, candidates apply."}
+                  value={knowledgeDraft}
+                  onChange={e => setKnowledgeDraft(e.target.value)}
+                  rows={8}
+                />
+              </div>
+              <div className="knowledge-footer">
+                <span className="mem-note" style={{borderTop:"none",paddingTop:0}}>
+                  {knowledgeDraft.length > 0 ? `${knowledgeDraft.length} chars · FORGE will use this in every response` : "Empty — FORGE starts fresh each session"}
+                </span>
+                <div style={{display:"flex",gap:"8px"}}>
+                  {userCtx?.knowledge && (
+                    <button className="knowledge-clear" onClick={() => {
+                      const updated = { ...userCtx, knowledge: "" };
+                      setUserCtx(updated);
+                      setKnowledgeDraft("");
+                      save({ ctx: updated, messages, memory });
+                    }}>Clear</button>
+                  )}
+                  <button className="knowledge-save" onClick={() => {
+                    const updated = { ...userCtx, knowledge: knowledgeDraft.trim() };
+                    setUserCtx(updated);
+                    save({ ctx: updated, messages, memory });
+                    setShowKnowledge(false);
+                  }}>Save Knowledge →</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
