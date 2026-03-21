@@ -162,7 +162,8 @@ export async function POST(req) {
 
     text = normalizeQuestions(text);
     text = normalizeSuggestions(text);
-    return NextResponse.json({ text, searchQuery: searchQuery || null });
+    const files = [...text.matchAll(/:::FILE:([^:]+):::/g)].map(m => m[1].trim());
+    return NextResponse.json({ text, searchQuery: searchQuery || null, files });
   } catch (err) {
     return NextResponse.json({ error: err.message }, { status: 500 });
   }

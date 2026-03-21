@@ -119,7 +119,29 @@ HOW YOU TALK
 Short sharp sentences. Depth matches skill level. End with momentum.
 Markdown: **bold** \`inline\` \`\`\`lang code blocks
 
-Not a search engine. Not a yes-machine. Not a lecturer. Not a robot.`;
+Not a search engine. Not a yes-machine. Not a lecturer. Not a robot.
+
+═══════════════════════════════════
+FILE GENERATION — ALWAYS DO THIS FOR CODE
+═══════════════════════════════════
+When outputting code files, ALWAYS prefix each code block with :::FILE:filename.ext:::
+This creates a real downloadable file for the user.
+
+Example:
+:::FILE:App.jsx:::
+\`\`\`jsx
+// your code here
+\`\`\`
+
+:::FILE:style.css:::
+\`\`\`css
+/* your styles here */
+\`\`\`
+
+RULES:
+- Always use the actual filename (App.jsx, index.html, server.py, etc.)
+- Every code block that is a file MUST have :::FILE:filename::: before it
+- Short snippets or examples don't need it — only actual files`;
 }
 
 // ─── HELPERS ─────────────────────────────────────────────────────────────────
@@ -158,6 +180,8 @@ function stripBlocks(text) {
     .replace(/<questions>[\s\S]*?<\/questions>/g, "")
     .replace(/<suggestions>[\s\S]*?<\/suggestions>/g, "")
     .replace(/::QUESTIONS::[\s\S]*?::END::/g, "")
+    .replace(/:::FILE:[^:]+:::\n?/g, "")
+    .replace(/:::FNAME:[^:]+:::\n?/g, "")
     .replace(/\[[\s\S]*?"q"\s*:[\s\S]*?\]/g, "")
     .replace(/\[\s*"[^"\[\]]+"(?:\s*,\s*"[^"\[\]]+")*\s*\]/g, "")
     .replace(/^\s*[\[\]]\s*$/gm, "")
@@ -166,19 +190,30 @@ function stripBlocks(text) {
 }
 
 function parseMarkdown(text) {
+  // Extract :::FILE:filename::: tags and queue them for code blocks
+  const fnameQueue = [];
+  text = text.replace(/:::FILE:([^:]+):::[\n]?/g, (_, fname) => {
+    fnameQueue.push(fname.trim());
+    return "";
+  });
+  // Strip any leftover :::FNAME::: markers
+  text = text.replace(/:::FNAME:[^:]+:::[\n]?/g, "");
+
   return text
     .replace(/```(\w+)?\n([\s\S]*?)```/g, (_, lang, code) => {
       const id = `c${++codeIdCounter}`;
-      codeRegistry.set(id, { code: code.trimEnd(), lang: lang || "txt" });
+      const fname = fnameQueue.shift() || null;
+      codeRegistry.set(id, { code: code.trimEnd(), lang: lang || "txt", fname });
       const escaped = code.replace(/</g, "&lt;").replace(/>/g, "&gt;");
       const isHtml = lang === "html" || lang === "HTML";
+      const displayName = fname || (lang || "code");
       return `<div class="code-wrap">
         <div class="code-header">
-          <span class="code-lang">${lang || "code"}</span>
+          <span class="code-lang">${displayName}</span>
           <div class="code-btns">
-            ${isHtml ? `<button class="cb preview-cb" data-id="${id}">▶ Preview</button>` : ""}
-            <button class="cb download-cb" data-id="${id}">⬇ Save</button>
-            <button class="cb copy-cb" data-id="${id}">⎘ Copy</button>
+            ${isHtml ? `<button class="cb preview-cb" data-id="${id}">&#9654; Preview</button>` : ""}
+            <button class="cb download-cb" data-id="${id}">&#8595; ${fname || "Save"}</button>
+            <button class="cb copy-cb" data-id="${id}">&#10064; Copy</button>
           </div>
         </div>
         <pre class="code-block"><code>${escaped}</code></pre>
@@ -361,6 +396,9 @@ export default function ForgeAgent() {
   const [msgCount, setMsgCount] = useState(0);
   const [feedback, setFeedback] = useState({});
   const [feedbackPrompt, setFeedbackPrompt] = useState(null);
+  const [searching, setSearching] = useState(false);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [generatedFiles, setGeneratedFiles] = useState([]);
   const [copiedId, setCopiedId] = useState(null);
   const [previewCode, setPreviewCode] = useState(null);
   const bottomRef = useRef(null);
@@ -412,9 +450,10 @@ export default function ForgeAgent() {
       if (btn.classList.contains("download-cb")) {
         const extMap = { js: "js", jsx: "jsx", ts: "ts", tsx: "tsx", py: "py", html: "html", css: "css", json: "json", md: "md" };
         const ext = extMap[entry.lang] || "txt";
+        const filename = entry.fname || `forge-output.${ext}`;
         const blob = new Blob([entry.code], { type: "text/plain" });
         const url = URL.createObjectURL(blob);
-        const a = document.createElement("a"); a.href = url; a.download = `forge-output.${ext}`; a.click();
+        const a = document.createElement("a"); a.href = url; a.download = filename; a.click();
         URL.revokeObjectURL(url);
       }
       if (btn.classList.contains("preview-cb")) setPreviewCode(entry.code);
@@ -508,6 +547,18 @@ export default function ForgeAgent() {
       const data = await res.json();
       if (data.error) throw new Error(data.error);
 
+      // Show search indicator if FORGE searched the web
+      if (data.searchQuery) {
+        setSearching(true);
+        setSearchQuery(data.searchQuery);
+        setTimeout(() => { setSearching(false); setSearchQuery(""); }, 3000);
+      }
+
+      if (data.files?.length > 0) {
+        setGeneratedFiles(data.files);
+        setTimeout(() => setGeneratedFiles([]), 8000);
+      }
+
       const reply = data.text || "Something went wrong. Try again.";
       setMessages(prev => {
         const updated = [...prev, { role: "assistant", content: reply, id: Date.now() }];
@@ -596,13 +647,28 @@ export default function ForgeAgent() {
               <div className="avatar forge">F</div>
               <div className="thinking">
                 <div className="thinking-dot" /><div className="thinking-dot" /><div className="thinking-dot" />
-                <span>FORGE is thinking{dots}</span>
+                <span>{searching ? `🔍 Searching "${searchQuery.substring(0,30)}${searchQuery.length>30?"...":""}"` : `FORGE is thinking${dots}`}</span>
               </div>
             </div>
           </>
         )}
         <div ref={bottomRef} />
       </div>
+
+      {/* File generation banner */}
+      {generatedFiles.length > 0 && !loading && (
+        <div className="files-banner">
+          <div>
+            <span className="files-icon">📁</span>
+            <span className="files-text">
+              {generatedFiles.length === 1
+                ? `${generatedFiles[0]} ready — click ⬇ Save on the code block`
+                : `${generatedFiles.length} files ready — click ⬇ Save on each code block`}
+            </span>
+            <button className="files-dismiss" onClick={() => setGeneratedFiles([])}>✕</button>
+          </div>
+        </div>
+      )}
 
       {/* Suggestions */}
       {activeSuggestions && !loading && (
