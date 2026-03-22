@@ -539,85 +539,100 @@ export default function ForgeAgent() {
     ta.style.height = Math.min(ta.scrollHeight, 160) + "px";
   };
 
-  // ── AGENT MODE: autonomous multi-step execution ──
+  // ── AGENT MODE: frontend-driven loop, one step at a time ──
   const runAgent = async (goal) => {
     if (!goal.trim() || agentRunning) return;
     setAgentRunning(true);
-    setAgentSteps([]);
+    setAgentSteps([{ type: "start", goal }]);
     setAgentFiles([]);
     setInput("");
 
-    // Add user message to chat
-    const userMsg = { role: "user", content: `🤖 Agent Goal: ${goal}`, id: Date.now() };
+    const userMsg = { role: "user", content: `⚡ Agent Goal: ${goal}`, id: Date.now() };
     setMessages(prev => [...prev, userMsg]);
 
     const systemContext = buildSystemPrompt(userCtx, memory);
+    let history = [{ role: "user", content: `Complete this task: ${goal}` }];
+    let lastResult = null;
+    let stepCount = 0;
+    const MAX_STEPS = 8;
+    const createdFiles = [];
 
     try {
-      const res = await fetch("/api/agent", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ goal, systemContext }),
-      });
+      while (stepCount < MAX_STEPS) {
+        stepCount++;
+        setAgentSteps(prev => [...prev.filter(s => s.type !== "thinking"), { type: "thinking" }]);
 
-      const reader = res.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = "";
+        const res = await fetch("/api/agent", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ goal, history, lastResult, systemContext }),
+        });
 
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split("\n");
-        buffer = lines.pop() || "";
-
-        for (const line of lines) {
-          if (!line.startsWith("data: ")) continue;
-          try {
-            const event = JSON.parse(line.slice(6));
-            handleAgentEvent(event);
-          } catch {}
+        const data = await res.json();
+        if (data.error) {
+          setAgentSteps(prev => [...prev.filter(s => s.type !== "thinking"), { type: "error", message: data.error }]);
+          break;
         }
+
+        const { step, result, nextUserMessage } = data;
+        history = data.history;
+        lastResult = nextUserMessage;
+
+        // Update UI based on step type
+        setAgentSteps(prev => {
+          const filtered = prev.filter(s => s.type !== "thinking");
+          const newStep = { type: "step", action: step.action, ...step };
+          return [...filtered, newStep];
+        });
+
+        if (step.action === "FILE" && step.filename && step.code) {
+          createdFiles.push({ filename: step.filename, code: step.code });
+          setAgentFiles([...createdFiles]);
+          setAgentSteps(prev => [...prev, { type: "file_created", filename: step.filename }]);
+        }
+
+        if (step.action === "CODE" && result) {
+          setAgentSteps(prev => [...prev, {
+            type: "code_result",
+            success: result.success,
+            output: result.output,
+            error: result.error
+          }]);
+        }
+
+        if (step.action === "SEARCH") {
+          setAgentSteps(prev => [...prev, { type: "search_result", query: step.query }]);
+        }
+
+        if (step.action === "DONE") {
+          setAgentSteps(prev => {
+            const filtered = prev.filter(s => s.type !== "thinking");
+            return [...filtered, { type: "done", summary: step.summary }];
+          });
+          setAgentFiles([...createdFiles]);
+          const doneMsg = {
+            role: "assistant",
+            content: `✅ **Task Complete**\n\n${step.summary}${createdFiles.length ? `\n\n**Files created:** ${createdFiles.map(f => f.filename).join(", ")}` : ""}`,
+            id: Date.now(),
+          };
+          setMessages(prev => [...prev, doneMsg]);
+          break;
+        }
+
+        // Small delay between steps so UI updates visibly
+        await new Promise(r => setTimeout(r, 300));
+      }
+
+      if (stepCount === MAX_STEPS) {
+        setAgentSteps(prev => [...prev.filter(s => s.type !== "thinking"),
+          { type: "done", summary: `Reached max steps. Files: ${createdFiles.map(f => f.filename).join(", ") || "none"}` }
+        ]);
+        setAgentFiles([...createdFiles]);
       }
     } catch (err) {
-      setAgentSteps(prev => [...prev, { type: "error", message: err.message }]);
+      setAgentSteps(prev => [...prev.filter(s => s.type !== "thinking"), { type: "error", message: err.message }]);
     } finally {
       setAgentRunning(false);
-    }
-  };
-
-  const handleAgentEvent = (event) => {
-    if (event.type === "start") {
-      setAgentSteps([{ type: "start", goal: event.goal }]);
-    } else if (event.type === "thinking") {
-      setAgentSteps(prev => [...prev, { type: "thinking", step: event.step }]);
-    } else if (event.type === "step") {
-      setAgentSteps(prev => {
-        const filtered = prev.filter(s => s.type !== "thinking");
-        return [...filtered, event];
-      });
-    } else if (event.type === "file_created") {
-      setAgentFiles(prev => [...prev, event]);
-      setAgentSteps(prev => [...prev, { type: "file_created", filename: event.filename }]);
-    } else if (event.type === "search_result") {
-      setAgentSteps(prev => [...prev, { type: "search_result", query: event.query }]);
-    } else if (event.type === "code_result") {
-      setAgentSteps(prev => [...prev, { type: "code_result", success: event.success, output: event.output, error: event.error }]);
-    } else if (event.type === "done") {
-      setAgentSteps(prev => {
-        const filtered = prev.filter(s => s.type !== "thinking");
-        return [...filtered, { type: "done", summary: event.summary }];
-      });
-      setAgentFiles(event.files || []);
-      // Add completion message to chat
-      const doneMsg = {
-        role: "assistant",
-        content: `✅ **Task Complete**\n\n${event.summary}${event.files?.length ? `\n\n**Files created:** ${event.files.map(f => f.filename).join(", ")}` : ""}`,
-        id: Date.now(),
-      };
-      setMessages(prev => [...prev, doneMsg]);
-    } else if (event.type === "error") {
-      setAgentSteps(prev => [...prev, { type: "error", message: event.message }]);
     }
   };
 
