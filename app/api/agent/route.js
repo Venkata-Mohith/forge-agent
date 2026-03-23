@@ -1,8 +1,8 @@
 import { NextResponse } from "next/server";
 
-const GROQ_KEY = process.env.GROQ_API_KEY;
-const GROQ_URL = "https://api.groq.com/openai/v1/chat/completions";
-const MODEL = "llama-3.3-70b-versatile";
+const OLLAMA_URL_AGENT = "http://localhost:11434/v1/chat/completions";
+
+const MODEL = "qwen2.5:3b";
 
 // ── Piston code execution ──
 async function executeCode(language, code) {
@@ -68,40 +68,41 @@ function parseStep(text) {
   return { action: "THINK", content: t.substring(0, 300) };
 }
 
-const AGENT_SYSTEM = `You are an autonomous AI agent that completes tasks step by step.
+const AGENT_SYSTEM = `You are an autonomous AI agent. Complete tasks step by step. EVERY response MUST begin with exactly one tag.
 
-EVERY response MUST start with exactly one of: [THINK], [SEARCH], [FILE], [CODE], [DONE]
-
+To think or plan:
 [THINK]
-your reasoning here
+your reasoning
 
-[SEARCH]
-QUERY: what to search for
-
+To create a file:
 [FILE]
-NAME: filename.ext
+NAME: filename.py
 CONTENT:
-full file content here
+your code here
 
+To run code:
 [CODE]
 LANG: python
 RUN:
-code to execute
+code to run
 
+To finish:
 [DONE]
-SUMMARY: what was accomplished
+SUMMARY: what was built
 
-RULES:
-- Always start with [THINK] to plan
-- Create files with [FILE], test them with [CODE]
-- Never ask questions — just execute
-- End with [DONE] when complete`;
+CRITICAL RULES:
+- First response MUST start with [THINK]
+- Use ONLY these exact tags: [THINK], [FILE], [CODE], [DONE]
+- Do NOT use ::FILE:: or any other format
+- After [FILE], always use [CODE] to test it
+- End with [DONE] when task is complete
+- No questions, just execute`;
 
 export async function POST(req) {
   try {
     const { goal, history, lastResult, systemContext } = await req.json();
 
-    if (!GROQ_KEY) return NextResponse.json({ error: "GROQ_API_KEY not set" }, { status: 500 });
+    
 
     // Build message history for this step
     const messages = history || [{ role: "user", content: `Complete this task: ${goal}` }];
@@ -113,14 +114,14 @@ export async function POST(req) {
       ? `${AGENT_SYSTEM}\n\nUSER CONTEXT:\n${systemContext}`
       : AGENT_SYSTEM;
 
-    const res = await fetch(GROQ_URL, {
+    const res = await fetch(OLLAMA_URL_AGENT, {
       method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${GROQ_KEY}` },
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         model: MODEL,
         messages: [{ role: "system", content: systemPrompt }, ...messages],
-        max_tokens: 2048,
-        temperature: 0.3,
+        stream: false,
+        options: { temperature: 0.3, num_predict: 2048 },
       }),
     });
 
