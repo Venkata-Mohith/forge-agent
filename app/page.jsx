@@ -161,12 +161,8 @@ let codeIdCounter = 0;
 
 function extractBlock(text, tag) {
   if (!text) return null;
-  // Try proper tags first
-  const m = text.match(new RegExp(`<${tag}>([\s\S]*?)<\/${tag}>`));
+  const m = text.match(new RegExp(`<${tag}>([\\s\\S]*?)<\\/${tag}>`));
   if (m) { try { return JSON.parse(m[1].trim()); } catch {} }
-
-  // Fallback: Llama sometimes outputs raw JSON without tags
-  // Look for a JSON array of objects with "q" keys after a short intro line
   if (tag === "questions") {
     const arrayMatch = text.match(/\[\s*\{[\s\S]*?"q"[\s\S]*?\]/);
     if (arrayMatch) {
@@ -201,13 +197,11 @@ function stripBlocks(text) {
 }
 
 function parseMarkdown(text) {
-  // Extract :::FILE:filename::: tags and queue them for code blocks
   const fnameQueue = [];
   text = text.replace(/:::FILE:([^:]+):::[\n]?/g, (_, fname) => {
     fnameQueue.push(fname.trim());
     return "";
   });
-  // Strip any leftover :::FNAME::: markers
   text = text.replace(/:::FNAME:[^:]+:::[\n]?/g, "");
 
   return text
@@ -422,7 +416,6 @@ export default function ForgeAgent() {
   const textareaRef = useRef(null);
   const messagesRef = useRef(null);
 
-  // Load from localStorage on mount
   useEffect(() => {
     const stored = load();
     if (stored?.ctx) {
@@ -449,7 +442,6 @@ export default function ForgeAgent() {
     if (activeQuestions) { const i = {}; activeQuestions.forEach((_, idx) => { i[idx] = ""; }); setAnswers(i); }
   }, [lastAssistant?.id]);
 
-  // Code block button delegation
   useEffect(() => {
     const container = messagesRef.current;
     if (!container) return;
@@ -539,7 +531,7 @@ export default function ForgeAgent() {
     ta.style.height = Math.min(ta.scrollHeight, 160) + "px";
   };
 
-  // ── AGENT MODE: frontend-driven loop, one step at a time ──
+  // ── AGENT MODE — fixed to match new agent route response format ──
   const runAgent = async (goal) => {
     if (!goal.trim() || agentRunning) return;
     setAgentRunning(true);
@@ -550,85 +542,69 @@ export default function ForgeAgent() {
     const userMsg = { role: "user", content: `⚡ Agent Goal: ${goal}`, id: Date.now() };
     setMessages(prev => [...prev, userMsg]);
 
-    const systemContext = buildSystemPrompt(userCtx, memory);
-    let history = [{ role: "user", content: `Complete this task: ${goal}` }];
-    let lastResult = null;
-    let stepCount = 0;
-    const MAX_STEPS = 8;
-    const createdFiles = [];
-
     try {
-      while (stepCount < MAX_STEPS) {
-        stepCount++;
-        setAgentSteps(prev => [...prev.filter(s => s.type !== "thinking"), { type: "thinking" }]);
+      setAgentSteps(prev => [...prev, { type: "thinking" }]);
 
-        const res = await fetch("/api/agent", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ goal, history, lastResult, systemContext }),
-        });
+      const res = await fetch("/api/agent", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ goal }),
+      });
 
-        const data = await res.json();
-        if (data.error) {
-          setAgentSteps(prev => [...prev.filter(s => s.type !== "thinking"), { type: "error", message: data.error }]);
-          break;
-        }
+      const data = await res.json();
 
-        const { step, result, nextUserMessage } = data;
-        history = data.history;
-        lastResult = nextUserMessage;
+      if (data.error) {
+        setAgentSteps(prev => [...prev.filter(s => s.type !== "thinking"), { type: "error", message: data.error }]);
+        return;
+      }
 
-        // Update UI based on step type
-        setAgentSteps(prev => {
-          const filtered = prev.filter(s => s.type !== "thinking");
-          const newStep = { type: "step", action: step.action, ...step };
-          return [...filtered, newStep];
-        });
+      const { steps, files, done, summary } = data;
 
-        if (step.action === "FILE" && step.filename && step.code) {
-          createdFiles.push({ filename: step.filename, code: step.code });
-          setAgentFiles([...createdFiles]);
-          setAgentSteps(prev => [...prev, { type: "file_created", filename: step.filename }]);
-        }
+      // Animate steps into UI one by one
+      setAgentSteps(prev => prev.filter(s => s.type !== "thinking"));
 
-        if (step.action === "CODE" && result) {
+      for (const step of (steps || [])) {
+        await new Promise(r => setTimeout(r, 500));
+
+        if (step.type === "think") {
+          setAgentSteps(prev => [...prev, {
+            type: "step", action: "THINK", content: step.content
+          }]);
+        } else if (step.type === "file") {
+          setAgentSteps(prev => [...prev,
+            { type: "step", action: "CREATE_FILE", filename: step.filename },
+            { type: "file_created", filename: step.filename }
+          ]);
+        } else if (step.type === "code") {
+          setAgentSteps(prev => [...prev, {
+            type: "step", action: "RUN_CODE", language: step.language
+          }]);
+        } else if (step.type === "result") {
           setAgentSteps(prev => [...prev, {
             type: "code_result",
-            success: result.success,
-            output: result.output,
-            error: result.error
+            success: step.success,
+            output: step.output,
+            error: step.error
+          }]);
+        } else if (step.type === "done") {
+          setAgentSteps(prev => [...prev, {
+            type: "done", summary: step.summary
           }]);
         }
-
-        if (step.action === "SEARCH") {
-          setAgentSteps(prev => [...prev, { type: "search_result", query: step.query }]);
-        }
-
-        if (step.action === "DONE") {
-          setAgentSteps(prev => {
-            const filtered = prev.filter(s => s.type !== "thinking");
-            return [...filtered, { type: "done", summary: step.summary }];
-          });
-          setAgentFiles([...createdFiles]);
-          const doneMsg = {
-            role: "assistant",
-            content: `✅ **Task Complete**\n\n${step.summary}${createdFiles.length ? `\n\n**Files created:** ${createdFiles.map(f => f.filename).join(", ")}` : ""}`,
-            id: Date.now(),
-          };
-          setMessages(prev => [...prev, doneMsg]);
-          break;
-        }
-
-        // Small delay between steps so UI updates visibly
-        await new Promise(r => setTimeout(r, 300));
       }
 
-      if (stepCount === MAX_STEPS) {
-        setAgentSteps(prev => [...prev.filter(s => s.type !== "thinking"),
-          { type: "done", summary: `Reached max steps. Files: ${createdFiles.map(f => f.filename).join(", ") || "none"}` }
-        ]);
-        setAgentFiles([...createdFiles]);
-      }
+      // Set downloadable files
+      const fileList = Object.entries(files || {}).map(([filename, code]) => ({ filename, code }));
+      setAgentFiles(fileList);
+
+      // Add completion message to chat
+      const doneMsg = {
+        role: "assistant",
+        content: `✅ **Task Complete**\n\n${summary || "Done."}${fileList.length ? `\n\n**Files created:** ${fileList.map(f => f.filename).join(", ")}` : ""}`,
+        id: Date.now(),
+      };
+      setMessages(prev => [...prev, doneMsg]);
+
     } catch (err) {
       setAgentSteps(prev => [...prev.filter(s => s.type !== "thinking"), { type: "error", message: err.message }]);
     } finally {
@@ -658,7 +634,6 @@ export default function ForgeAgent() {
     const historyMessages = newMessages.map(m => ({ role: m.role, content: m.content }));
 
     try {
-      // Call our Next.js API route — runs server-side, no CORS issues
       const res = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -670,7 +645,6 @@ export default function ForgeAgent() {
       const data = await res.json();
       if (data.error) throw new Error(data.error);
 
-      // Show search indicator if FORGE searched the web
       if (data.searchQuery) {
         setSearching(true);
         setSearchQuery(data.searchQuery);
@@ -724,7 +698,6 @@ export default function ForgeAgent() {
 
   return (
     <div className="app">
-      {/* Header */}
       <div className="header">
         <div className="forge-logo">F</div>
         <div style={{ minWidth: 0 }}>
@@ -746,7 +719,6 @@ export default function ForgeAgent() {
         </div>
       </div>
 
-      {/* Messages */}
       <div className="messages" ref={messagesRef}>
         {messages.map((msg) => {
           const isA = msg.role === "assistant";
@@ -789,7 +761,6 @@ export default function ForgeAgent() {
         <div ref={bottomRef} />
       </div>
 
-      {/* File generation banner */}
       {generatedFiles.length > 0 && !loading && (
         <div className="files-banner">
           <div>
@@ -804,7 +775,6 @@ export default function ForgeAgent() {
         </div>
       )}
 
-      {/* Suggestions */}
       {activeSuggestions && !loading && (
         <div className="suggestions-bar">
           {activeSuggestions.map((s, i) => (
@@ -813,7 +783,6 @@ export default function ForgeAgent() {
         </div>
       )}
 
-      {/* Feedback prompt */}
       {feedbackPrompt && (
         <div className="fb-panel">
           <div className="fb-panel-title">What went wrong? <span onClick={() => setFeedbackPrompt(null)} className="fb-dismiss">✕</span></div>
@@ -831,7 +800,6 @@ export default function ForgeAgent() {
         </div>
       )}
 
-      {/* Question panel */}
       {activeQuestions && !loading && (
         <div className="q-panel">
           <div className="q-panel-inner">
@@ -856,7 +824,6 @@ export default function ForgeAgent() {
         </div>
       )}
 
-      {/* Agent Feed */}
       {(agentSteps.length > 0 || agentRunning) && (
         <div className="agent-feed">
           <div className="agent-feed-header">
@@ -870,14 +837,13 @@ export default function ForgeAgent() {
                 {step.type === "start" && <span>🎯 Goal: {step.goal}</span>}
                 {step.type === "thinking" && <span className="agent-thinking">⟳ Thinking...</span>}
                 {step.type === "step" && step.action === "THINK" && <span>💭 {step.content?.substring(0, 120)}{step.content?.length > 120 ? "..." : ""}</span>}
-                {step.type === "step" && step.action === "SEARCH" && <span>🔍 Searching: "{step.query}"</span>}
+                {step.type === "step" && step.action === "SEARCH" && <span>🔍 Searching: &quot;{step.query}&quot;</span>}
                 {step.type === "step" && step.action === "CREATE_FILE" && <span>📝 Creating: {step.filename}</span>}
                 {step.type === "step" && step.action === "RUN_CODE" && <span>▶ Running {step.language} code...</span>}
-                {step.type === "search_result" && <span className="agent-success">✓ Search complete</span>}
                 {step.type === "file_created" && <span className="agent-success">✓ Created {step.filename}</span>}
                 {step.type === "code_result" && (
                   <span className={step.success ? "agent-success" : "agent-error"}>
-                    {step.success ? `✓ Code ran successfully: ${step.output?.substring(0, 60)}` : `✗ Error: ${step.error?.substring(0, 80)}`}
+                    {step.success ? `✓ Code ran: ${step.output?.substring(0, 60)}` : `✗ Error: ${step.error?.substring(0, 80)}`}
                   </span>
                 )}
                 {step.type === "done" && <span className="agent-done">✅ {step.summary?.substring(0, 150)}</span>}
@@ -900,12 +866,9 @@ export default function ForgeAgent() {
         </div>
       )}
 
-      {/* Input */}
       <div className="input-area">
         <div className="input-wrap">
-          {agentMode && (
-            <span className="agent-mode-badge">⚡ AGENT</span>
-          )}
+          {agentMode && <span className="agent-mode-badge">⚡ AGENT</span>}
           <textarea ref={textareaRef} value={input}
             onChange={e => { setInput(e.target.value); autoResize(); }}
             onKeyDown={handleKey}
@@ -914,8 +877,7 @@ export default function ForgeAgent() {
           <button
             className={`agent-toggle ${agentMode ? "active" : ""}`}
             onClick={() => setAgentMode(m => !m)}
-            title={agentMode ? "Switch to chat mode" : "Switch to agent mode"}
-          >⚡</button>
+            title={agentMode ? "Switch to chat mode" : "Switch to agent mode"}>⚡</button>
           <button className="send-btn" onClick={() => agentMode ? runAgent(input) : sendMessage()} disabled={loading || agentRunning || !input.trim()}>
             <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
               <line x1="22" y1="2" x2="11" y2="13" /><polygon points="22 2 15 22 11 13 2 9 22 2" />
@@ -925,7 +887,6 @@ export default function ForgeAgent() {
         <div className="input-hint">SHIFT+ENTER new line · ENTER send</div>
       </div>
 
-      {/* Preview modal */}
       {previewCode && (
         <div className="overlay" onClick={() => setPreviewCode(null)}>
           <div style={{ background: "#0f0f0f", border: "1px solid #1e1e1e", borderRadius: 16, width: "100%", maxWidth: 900, height: "80vh", display: "flex", flexDirection: "column", overflow: "hidden" }} onClick={e => e.stopPropagation()}>

@@ -1,9 +1,9 @@
 import { NextResponse } from "next/server";
 
+export const maxDuration = 60;
 
-export const maxDuration = 300; // 5 minute timeout for slow local models
-const OLLAMA_URL = "http://localhost:11434/v1/chat/completions";
-const MODEL = "qwen2.5:3b";
+const GROQ_URL = "https://api.groq.com/openai/v1/chat/completions";
+const MODEL = "llama-3.3-70b-versatile";
 
 async function webSearch(query) {
   try {
@@ -19,7 +19,7 @@ async function webSearch(query) {
     if (results.length > 0) return results.join("\n\n");
     const htmlRes = await fetch(
       `https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`,
-      { headers: { "User-Agent": "Mozilla/5.0 (compatible; FORGE/1.0)" } }
+      { headers: { "User-Agent": "Mozilla/5.0" } }
     );
     const html = await htmlRes.text();
     const snippets = [...html.matchAll(/class="result__snippet"[^>]*>([^<]{20,300})</g)]
@@ -39,8 +39,7 @@ function parseQOFormat(text) {
       if (currentQ) questions.push(currentQ);
       currentQ = { q: line.slice(2).trim(), options: [] };
     } else if (line.startsWith('O:') && currentQ) {
-      const optStr = line.slice(2).trim();
-      currentQ.options = optStr ? optStr.split('|').map(o => o.trim()).filter(Boolean) : [];
+      currentQ.options = line.slice(2).trim().split('|').map(o => o.trim()).filter(Boolean);
     }
   }
   if (currentQ) questions.push(currentQ);
@@ -76,9 +75,12 @@ function extractSearchQuery(text) {
 
 export async function POST(req) {
   try {
+    const GROQ_KEY = process.env.GROQ_API_KEY;
+    if (!GROQ_KEY) return NextResponse.json({ error: "GROQ_API_KEY not set in .env.local" }, { status: 500 });
+
     const { messages, systemPrompt } = await req.json();
 
-    const ollamaMessages = [
+    const groqMessages = [
       { role: "system", content: systemPrompt },
       ...messages.map((m) => ({
         role: m.role,
@@ -86,21 +88,19 @@ export async function POST(req) {
       })),
     ];
 
-   const controller = new AbortController();
-const timeout = setTimeout(() => controller.abort(), 120000); // 2 min timeout
-
-const res = await fetch(OLLAMA_URL, {
-  method: "POST",
-  headers: { "Content-Type": "application/json" },
-  signal: controller.signal,
-  body: JSON.stringify({
-    model: MODEL,
-    messages: ollamaMessages,
-    stream: false,
-    options: { temperature: 0.8, num_predict: 512 }, // reduced tokens for speed
-  }),
-});
-clearTimeout(timeout);
+    const res = await fetch(GROQ_URL, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${GROQ_KEY}`,
+      },
+      body: JSON.stringify({
+        model: MODEL,
+        messages: groqMessages,
+        max_tokens: 4096,
+        temperature: 0.8,
+      }),
+    });
 
     if (!res.ok) {
       const err = await res.text();
@@ -115,18 +115,18 @@ clearTimeout(timeout);
       const searchResults = await webSearch(searchQuery);
       const cleanText = text.replace(/::SEARCH::[\s\S]*?::DONE::/g, '').trim();
       if (searchResults) {
-        const followUpRes = await fetch(OLLAMA_URL, {
+        const followUpRes = await fetch(GROQ_URL, {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: { "Content-Type": "application/json", Authorization: `Bearer ${GROQ_KEY}` },
           body: JSON.stringify({
             model: MODEL,
             messages: [
-              ...ollamaMessages,
+              ...groqMessages,
               { role: "assistant", content: cleanText || "Let me search for that." },
               { role: "user", content: `Search results for "${searchQuery}":\n\n${searchResults}\n\nAnswer using these results.` }
             ],
-            stream: false,
-            options: { temperature: 0.7, num_predict: 4096 },
+            max_tokens: 2048,
+            temperature: 0.7,
           }),
         });
         const data2 = await followUpRes.json();
@@ -143,9 +143,6 @@ clearTimeout(timeout);
     const files = [...text.matchAll(/:::FILE:([^:]+):::/g)].map(m => m[1].trim());
     return NextResponse.json({ text, searchQuery: searchQuery || null, files });
   } catch (err) {
-    if (err.message?.includes("ECONNREFUSED") || err.message?.includes("fetch failed")) {
-      return NextResponse.json({ error: "Ollama is not running. Run: ollama serve" }, { status: 503 });
-    }
     return NextResponse.json({ error: err.message }, { status: 500 });
   }
 }
